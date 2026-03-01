@@ -3,6 +3,7 @@ from fastmcp import FastMCP
 import aiosqlite
 import tempfile
 import os
+import re
 
 TEMP_DIR = tempfile.gettempdir()
 DB_PATH = os.path.join(TEMP_DIR, "expenses.db")
@@ -36,18 +37,46 @@ def init_db():
 init_db()
 
 
-@mcp.tool()
-async def add_expense(date, amount, category, subcategory='', note=''):
+def _parse_amount(amount):
+    if isinstance(amount, (int, float)):
+        return float(amount)
+    if amount is None:
+        raise ValueError("amount is required")
+    if not isinstance(amount, str):
+        raise ValueError("amount must be a number or numeric string")
+
+    cleaned = amount.strip()
+    if not cleaned:
+        raise ValueError("amount is required")
+
+    cleaned = cleaned.replace(",", "")
+    cleaned = re.sub(r"[^0-9.\-]", "", cleaned)
+    if cleaned in {"", "-", ".", "-."}:
+        raise ValueError("amount is not a valid number")
+
+    return float(cleaned)
+
+
+async def add_expense_impl(
+    date: str,
+    amount,
+    category: str,
+    subcategory: str = "",
+    note: str = "",
+):
     '''Add a new expense entry to the database.'''
     try:
+        parsed_amount = _parse_amount(amount)
         async with aiosqlite.connect(DB_PATH) as c:
             cur = await c.execute(
                 "INSERT INTO expenses(date, amount, category, subcategory, note) VALUES (?,?,?,?,?)",
-                (date, amount, category, subcategory, note)
+                (date, parsed_amount, category, subcategory, note)
             )
             expense_id = cur.lastrowid
             await c.commit()
             return {"status": "success", "id": expense_id, "message": "Expense added successfully"}
+    except ValueError as e:
+        return {"status": "error", "message": str(e)}
     except Exception as e:
         if "readonly" in str(e).lower():
             return {"status": "error", "message": "Database is in read-only mode. Check file permissions."}
@@ -55,7 +84,17 @@ async def add_expense(date, amount, category, subcategory='', note=''):
 
 
 @mcp.tool()
-async def list_expenses(start_date, end_date):
+async def add_expense(
+    date: str,
+    amount: float,
+    category: str,
+    subcategory: str = "",
+    note: str = "",
+):
+    return await add_expense_impl(date, amount, category, subcategory, note)
+
+
+async def list_expenses_impl(start_date: str, end_date: str):
     '''List expense entries within an inclusive date range.'''
     try:
         async with aiosqlite.connect(DB_PATH) as c:
@@ -72,6 +111,11 @@ async def list_expenses(start_date, end_date):
             return [dict(zip(cols, r)) for r in await cur.fetchall()]
     except Exception as e:
         return {"status": "error", "message": f"Error listing expenses: {str(e)}"}
+
+
+@mcp.tool()
+async def list_expenses(start_date: str, end_date: str):
+    return await list_expenses_impl(start_date, end_date)
 
 
 @mcp.tool()
@@ -127,5 +171,5 @@ def categories():
     except Exception as e:
         return f'{{"error": "Could not load categories: {str(e)}"}}'
 
-# if __name__ == "__main__":
-#     mcp.run(transport="http", host="0.0.0.0", port=8000)
+if __name__ == "__main__":
+    mcp.run(transport="http", host="0.0.0.0", port=8000)
